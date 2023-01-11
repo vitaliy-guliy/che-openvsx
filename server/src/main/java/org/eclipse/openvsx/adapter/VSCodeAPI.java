@@ -22,9 +22,8 @@ import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.ModelAndView;
 
 import javax.servlet.http.HttpServletRequest;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @RestController
 public class VSCodeAPI {
@@ -61,43 +60,61 @@ public class VSCodeAPI {
         }
 
         var totalCount = 0L;
-        var resultItem = new ExtensionQueryResult.ResultItem();
-        resultItem.extensions = new ArrayList<>(size);
+        var extensions = new ArrayList<ExtensionQueryResult.Extension>();
+        var extensionIds = new HashSet<String>();
 
         var services = getVSCodeServices().iterator();
-        while(resultItem.extensions.size() < size && services.hasNext()) {
+        while(extensions.size() < size && services.hasNext()) {
             try {
                 var service = services.next();
-                var subResult = service.extensionQuery(param, DEFAULT_PAGE_SIZE);
-                var subExtensions = subResult.results.get(0).extensions;
-                if (subExtensions != null && subExtensions.size() > 0) {
-                    int limit = size - resultItem.extensions.size();
-                    mergeExtensionQueryResults(resultItem, subExtensions, limit);
-                }
+                if(extensions.isEmpty()) {
+                    var subResult = service.extensionQuery(param, DEFAULT_PAGE_SIZE);
+                    var subExtensions = subResult.results.get(0).extensions;
+                    if(subExtensions != null) {
+                        extensions.addAll(subExtensions);
+                    }
 
-                totalCount += getTotalCount(subResult);
+                    totalCount = getTotalCount(subResult);
+                } else {
+                    var extensionCount = extensions.size();
+                    var subResult = service.extensionQuery(param, DEFAULT_PAGE_SIZE);
+                    var subExtensions = subResult.results.get(0).extensions;
+                    var subExtensionsCount = subExtensions != null ? subExtensions.size() : 0;
+                    if (subExtensionsCount > 0) {
+                        int limit = size - extensionCount;
+                        mergeExtensionQueryResults(extensions, extensionIds, subExtensions, limit);
+                    }
+
+                    var mergedExtensionsCount = extensions.size();
+                    var subTotalCount = getTotalCount(subResult);
+                    totalCount += subTotalCount - ((extensionCount + subExtensionsCount) - mergedExtensionsCount);
+                }
             } catch (NotFoundException | ResponseStatusException exc) {
                 // Try the next registry
             }
         }
 
+        var resultItem = new ExtensionQueryResult.ResultItem();
+        resultItem.extensions = extensions;
         return toExtensionQueryResult(resultItem, totalCount);
     }
 
-    private void mergeExtensionQueryResults(ExtensionQueryResult.ResultItem resultItem, List<ExtensionQueryResult.Extension> extensions, int limit) {
-        var previous = new ArrayList<>(resultItem.extensions);
-        var extensionsIter = extensions.iterator();
-        while (extensionsIter.hasNext() && resultItem.extensions.size() < limit) {
-            var next = extensionsIter.next();
-            var noneMatch = previous.stream()
-                    .noneMatch(prev -> {
-                        var prevPublisher = prev.publisher.publisherName;
-                        var nextPublisher = next.publisher.publisherName;
-                        return prevPublisher.equals(nextPublisher) && prev.extensionName.equals(next.extensionName);
-                    });
+    private void mergeExtensionQueryResults(List<ExtensionQueryResult.Extension> extensions, Set<String> extensionIds, List<ExtensionQueryResult.Extension> subExtensions, int limit) {
+        if(extensionIds.isEmpty() && !extensions.isEmpty()) {
+            var extensionIdSet = extensions.stream()
+                    .map(extension -> extension.publisher.publisherName + "." + extension.extensionName)
+                    .collect(Collectors.toSet());
 
-            if (noneMatch) {
-                resultItem.extensions.add(next);
+            extensionIds.addAll(extensionIdSet);
+        }
+
+        var subExtensionsIter = subExtensions.iterator();
+        while (subExtensionsIter.hasNext() && extensions.size() < limit) {
+            var subExtension = subExtensionsIter.next();
+            var key = subExtension.publisher.publisherName + "." + subExtension.extensionName;
+            if(!extensionIds.contains(key)) {
+                extensions.add(subExtension);
+                extensionIds.add(key);
             }
         }
     }

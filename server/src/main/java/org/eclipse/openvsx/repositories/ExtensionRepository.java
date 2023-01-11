@@ -9,6 +9,7 @@
  ********************************************************************************/
 package org.eclipse.openvsx.repositories;
 
+import org.eclipse.openvsx.entities.UserData;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.Repository;
 import org.springframework.data.util.Streamable;
@@ -16,7 +17,7 @@ import org.springframework.data.util.Streamable;
 import org.eclipse.openvsx.entities.Extension;
 import org.eclipse.openvsx.entities.Namespace;
 
-import java.time.LocalDateTime;
+import java.util.Collection;
 
 public interface ExtensionRepository extends Repository<Extension, Long> {
 
@@ -33,6 +34,10 @@ public interface ExtensionRepository extends Repository<Extension, Long> {
     Extension findByPublicId(String publicId);
 
     Streamable<Extension> findByActiveTrue();
+
+    Streamable<Extension> findByIdIn(Collection<Long> extensionIds);
+
+    Streamable<Extension> findDistinctByVersionsPublishedWithUser(UserData user);
 
     long count();
 

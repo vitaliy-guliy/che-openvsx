@@ -10,14 +10,13 @@
 package org.eclipse.openvsx;
 
 import java.io.EOFException;
-import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 import java.util.zip.ZipException;
 import java.util.zip.ZipFile;
 
@@ -26,8 +25,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.MissingNode;
 import com.fasterxml.jackson.dataformat.xml.XmlMapper;
-import com.google.common.io.ByteStreams;
-import com.google.common.io.Files;
 
 import org.eclipse.openvsx.entities.ExtensionVersion;
 import org.eclipse.openvsx.entities.FileResource;
@@ -39,7 +36,6 @@ import org.elasticsearch.common.Strings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.util.Pair;
-import org.springframework.http.HttpStatus;
 
 /**
  * Processes uploaded extension files and extracts their metadata.
@@ -52,21 +48,17 @@ public class ExtensionProcessor implements AutoCloseable {
     private static final String[] LICENSE = { "extension/LICENSE.md", "extension/LICENSE", "extension/LICENSE.txt" };
     private static final String[] CHANGELOG = { "extension/CHANGELOG.md", "extension/CHANGELOG", "extension/CHANGELOG.txt" };
 
-    private static final int MAX_CONTENT_SIZE = 512 * 1024 * 1024;
     private static final Pattern LICENSE_PATTERN = Pattern.compile("SEE( (?<license>\\S+))? LICENSE IN (?<file>\\S+)");
-
-    private static final String WEB_EXTENSION_TAG = "__web_extension";
 
     protected final Logger logger = LoggerFactory.getLogger(ExtensionProcessor.class);
 
-    private final InputStream inputStream;
-    private byte[] content;
+    private final Path extensionFile;
     private ZipFile zipFile;
     private JsonNode packageJson;
     private JsonNode vsixManifest;
 
-    public ExtensionProcessor(InputStream stream) {
-        this.inputStream = stream;
+    public ExtensionProcessor(Path extensionFile) {
+        this.extensionFile = extensionFile;
     }
 
     @Override
@@ -85,13 +77,7 @@ public class ExtensionProcessor implements AutoCloseable {
             return;
         }
         try {
-            if (inputStream != null)
-                content = ByteStreams.toByteArray(inputStream);
-            if (content.length > MAX_CONTENT_SIZE)
-                throw new ErrorResultException("The extension package exceeds the size limit of 512 MB.", HttpStatus.PAYLOAD_TOO_LARGE);
-            var tempFile = File.createTempFile("extension_", ".vsix");
-            Files.write(content, tempFile);
-            zipFile = new ZipFile(tempFile);
+            zipFile = new ZipFile(extensionFile.toFile());
         } catch (ZipException exc) {
             throw new ErrorResultException("Could not read zip file: " + exc.getMessage());
         } catch (EOFException exc) {
@@ -213,6 +199,12 @@ public class ExtensionProcessor implements AutoCloseable {
         return themeNode.path("Value").asText();
     }
 
+    public List<String> getLocalizedLanguages() {
+        loadVsixManifest();
+        var languagesNode = findByIdInArray(vsixManifest.path("Metadata").path("Properties").path("Property"), "Microsoft.VisualStudio.Code.LocalizedLanguages");
+        return asStringList(languagesNode.path("Value").asText(), ",");
+    }
+
     public boolean isPreview() {
         loadVsixManifest();
         var galleryFlags = vsixManifest.path("Metadata").path("GalleryFlags");
@@ -246,6 +238,7 @@ public class ExtensionProcessor implements AutoCloseable {
         extension.setMarkdown(packageJson.path("markdown").textValue());
         extension.setGalleryColor(getGalleryColor());
         extension.setGalleryTheme(getGalleryTheme());
+        extension.setLocalizedLanguages(getLocalizedLanguages());
         extension.setQna(packageJson.path("qna").textValue());
 
         return extension;
@@ -276,7 +269,7 @@ public class ExtensionProcessor implements AutoCloseable {
 
     private List<String> asStringList(String value, String sep){
         if (Strings.isNullOrEmpty(value)){
-            return new ArrayList<String>();
+            return new ArrayList<>();
         }
 
         return Arrays.asList(value.split(sep));
@@ -295,62 +288,26 @@ public class ExtensionProcessor implements AutoCloseable {
         return null;
     }
 
-    public List<FileResource> getResources(ExtensionVersion extVersion) {
-        return getResources(extVersion, Collections.emptyList());
-    }
-
-    public List<FileResource> getResources(ExtensionVersion extVersion, List<String> excludes) {
+    public List<FileResource> getFileResources(ExtensionVersion extVersion) {
         var resources = new ArrayList<FileResource>();
-        if(!excludes.contains(FileResource.RESOURCE)) {
-            resources.addAll(getAllResources(extVersion).collect(Collectors.toList()));
-        }
-        if(!excludes.contains(FileResource.DOWNLOAD)) {
-            var binary = getBinary(extVersion);
-            if (binary != null)
-                resources.add(binary);
-        }
-        if(!excludes.contains(FileResource.MANIFEST)) {
-            var manifest = getManifest(extVersion);
-            if (manifest != null)
-                resources.add(manifest);
-        }
-        if(!excludes.contains(FileResource.README)) {
-            var readme = getReadme(extVersion);
-            if (readme != null)
-                resources.add(readme);
-        }
-        if(!excludes.contains(FileResource.CHANGELOG)) {
-            var changelog = getChangelog(extVersion);
-            if (changelog != null)
-                resources.add(changelog);
-        }
-        if(!excludes.contains(FileResource.LICENSE)) {
-            var license = getLicense(extVersion);
-            if (license != null)
-                resources.add(license);
-        }
-        if(!excludes.contains(FileResource.ICON)) {
-            var icon = getIcon(extVersion);
-            if (icon != null)
-                resources.add(icon);
-        }
+        var mappers = List.<Function<ExtensionVersion, FileResource>>of(
+                this::getManifest, this::getReadme, this::getChangelog, this::getLicense, this::getIcon
+        );
 
+        mappers.forEach(mapper -> Optional.of(extVersion).map(mapper).ifPresent(resources::add));
         return resources;
     }
 
     public void processEachResource(ExtensionVersion extVersion, Consumer<FileResource> processor) {
-        getAllResources(extVersion).forEach(processor);
-    }
-
-    protected Stream<FileResource> getAllResources(ExtensionVersion extVersion) {
         readInputStream();
-        return zipFile.stream()
+        zipFile.stream()
+                .filter(zipEntry -> !zipEntry.isDirectory())
                 .map(zipEntry -> {
                     byte[] bytes;
                     try {
                         bytes = ArchiveUtil.readEntry(zipFile, zipEntry);
                     } catch(ErrorResultException exc) {
-                        logger.warn("Failed to read entry", exc);
+                        logger.warn(exc.getMessage());
                         bytes = null;
                     }
                     if (bytes == null) {
@@ -363,23 +320,25 @@ public class ExtensionProcessor implements AutoCloseable {
                     resource.setContent(bytes);
                     return resource;
                 })
-                .filter(Objects::nonNull);
+                .filter(Objects::nonNull)
+                .forEach(processor);
     }
 
     public FileResource getBinary(ExtensionVersion extVersion) {
         var binary = new FileResource();
         binary.setExtension(extVersion);
-        binary.setName(getBinaryName());
+        binary.setName(getBinaryName(extVersion));
         binary.setType(FileResource.DOWNLOAD);
-        binary.setContent(content);
+        binary.setContent(null);
         return binary;
     }
 
-    private String getBinaryName() {
-        loadVsixManifest();
-        var resourceName = getNamespace() + "." + getExtensionName() + "-" + getVersion();
-        if(!TargetPlatform.isUniversal(getTargetPlatform())) {
-            resourceName += "@" + getTargetPlatform();
+    private String getBinaryName(ExtensionVersion extVersion) {
+        var extension = extVersion.getExtension();
+        var namespace = extension.getNamespace();
+        var resourceName = namespace.getName() + "." + extension.getName() + "-" + extVersion.getVersion();
+        if(!TargetPlatform.isUniversal(extVersion.getTargetPlatform())) {
+            resourceName += "@" + extVersion.getTargetPlatform();
         }
 
         resourceName += ".vsix";

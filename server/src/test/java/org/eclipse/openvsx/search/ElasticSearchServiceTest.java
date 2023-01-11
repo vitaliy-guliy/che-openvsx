@@ -18,13 +18,10 @@ import java.util.List;
 import java.util.Map;
 
 import org.eclipse.openvsx.cache.LatestExtensionVersionCacheKeyGenerator;
-import org.eclipse.openvsx.cache.LatestExtensionVersionDTOCacheKeyGenerator;
 import org.eclipse.openvsx.entities.*;
 import org.eclipse.openvsx.repositories.RepositoryService;
-import org.eclipse.openvsx.util.ErrorResultException;
 import org.eclipse.openvsx.util.TargetPlatform;
 import org.eclipse.openvsx.util.VersionService;
-import org.junit.Assert;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mockito;
@@ -40,8 +37,13 @@ import org.springframework.data.elasticsearch.core.query.IndexQuery;
 import org.springframework.data.util.Streamable;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
 
+import javax.persistence.EntityManager;
+
 @ExtendWith(SpringExtension.class)
 public class ElasticSearchServiceTest {
+
+    @MockBean
+    EntityManager entityManager;
 
     @MockBean
     RepositoryService repositories;
@@ -237,6 +239,7 @@ public class ElasticSearchServiceTest {
         extension.setId(name.hashCode());
         extension.setAverageRating(averageRating);
         extension.setDownloadCount(downloadCount);
+        Mockito.when(entityManager.merge(extension)).thenReturn(extension);
         Mockito.when(repositories.countActiveReviews(extension))
                 .thenReturn((long) ratingCount);
         var namespace = new Namespace();
@@ -294,11 +297,6 @@ public class ElasticSearchServiceTest {
         @Bean
         LatestExtensionVersionCacheKeyGenerator latestExtensionVersionCacheKeyGenerator() {
             return new LatestExtensionVersionCacheKeyGenerator();
-        }
-
-        @Bean
-        LatestExtensionVersionDTOCacheKeyGenerator latestExtensionVersionDTOCacheKeyGenerator() {
-            return new LatestExtensionVersionDTOCacheKeyGenerator();
         }
     }
     

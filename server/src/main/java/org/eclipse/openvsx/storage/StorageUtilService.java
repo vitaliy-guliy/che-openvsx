@@ -11,19 +11,28 @@ package org.eclipse.openvsx.storage;
 
 import com.google.common.base.Strings;
 import com.google.common.collect.Maps;
+import org.eclipse.openvsx.cache.CacheService;
+import org.eclipse.openvsx.entities.Download;
 import org.eclipse.openvsx.entities.ExtensionVersion;
 import org.eclipse.openvsx.entities.FileResource;
 import org.eclipse.openvsx.repositories.RepositoryService;
+import org.eclipse.openvsx.search.SearchUtilService;
 import org.eclipse.openvsx.util.TimeUtil;
 import org.eclipse.openvsx.util.UrlUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 
+import javax.persistence.EntityManager;
 import javax.transaction.Transactional;
 import java.net.URI;
+import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static org.eclipse.openvsx.entities.FileResource.*;
@@ -48,7 +57,13 @@ public class StorageUtilService implements IStorageService {
     AzureDownloadCountService azureDownloadCountService;
 
     @Autowired
-    DownloadCountService downloadCountService;
+    SearchUtilService search;
+
+    @Autowired
+    CacheService cache;
+
+    @Autowired
+    EntityManager entityManager;
 
     /** Determines which external storage service to use in case multiple services are configured. */
     @Value("${ovsx.storage.primary-service:}")
@@ -92,7 +107,6 @@ public class StorageUtilService implements IStorageService {
     }
 
     @Override
-    @Transactional(Transactional.TxType.MANDATORY)
     public void uploadFile(FileResource resource) {
         var storageType = getActiveStorageType();
         switch (storageType) {
@@ -101,6 +115,23 @@ public class StorageUtilService implements IStorageService {
                 break;
             case STORAGE_AZURE:
                 azureStorage.uploadFile(resource);
+                break;
+            default:
+                throw new RuntimeException("External storage is not available.");
+        }
+
+        resource.setStorageType(storageType);
+    }
+
+    @Override
+    public void uploadFile(FileResource resource, Path filePath) {
+        var storageType = getActiveStorageType();
+        switch (storageType) {
+            case STORAGE_GOOGLE:
+                googleStorage.uploadFile(resource, filePath);
+                break;
+            case STORAGE_AZURE:
+                azureStorage.uploadFile(resource, filePath);
                 break;
             default:
                 throw new RuntimeException("External storage is not available.");
@@ -161,13 +192,27 @@ public class StorageUtilService implements IStorageService {
         return type2Url;
     }
 
-    public void increaseDownloadCount(ExtensionVersion extVersion, FileResource resource) {
+    @Transactional
+    public void increaseDownloadCount(FileResource resource) {
         if(azureDownloadCountService.isEnabled()) {
             // don't count downloads twice
             return;
         }
 
-        downloadCountService.increaseDownloadCount(extVersion, resource, List.of(TimeUtil.getCurrentUTC()));
+        var download = new Download();
+        download.setAmount(1);
+        download.setTimestamp(TimeUtil.getCurrentUTC());
+        download.setFileResourceId(resource.getId());
+        entityManager.persist(download);
+
+        resource = entityManager.merge(resource);
+        var extension = resource.getExtension().getExtension();
+        extension.setDownloadCount(extension.getDownloadCount() + 1);
+
+        cache.evictExtensionJsons(extension);
+        if (extension.isActive()) {
+            search.updateSearchEntry(extension);
+        }
     }
 
     public HttpHeaders getFileResponseHeaders(String fileName) {
@@ -179,5 +224,19 @@ public class StorageUtilService implements IStorageService {
             headers.setCacheControl(StorageUtil.getCacheControl(fileName));
         }
         return headers;
+    }
+
+    @Transactional
+    public ResponseEntity<byte[]> getFileResponse(FileResource resource) {
+        resource = entityManager.merge(resource);
+        if (resource.getStorageType().equals(FileResource.STORAGE_DB)) {
+            var headers = getFileResponseHeaders(resource.getName());
+            return new ResponseEntity<>(resource.getContent(), headers, HttpStatus.OK);
+        } else {
+            return ResponseEntity.status(HttpStatus.FOUND)
+                    .location(getLocation(resource))
+                    .cacheControl(CacheControl.maxAge(7, TimeUnit.DAYS).cachePublic())
+                    .build();
+        }
     }
 }

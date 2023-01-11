@@ -9,7 +9,6 @@
  ********************************************************************************/
 package org.eclipse.openvsx.repositories;
 
-import org.eclipse.openvsx.dto.*;
 import org.eclipse.openvsx.entities.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.util.Streamable;
@@ -35,13 +34,13 @@ public class RepositoryService {
     @Autowired PersonalAccessTokenRepository tokenRepo;
     @Autowired PersistedLogRepository persistedLogRepo;
     @Autowired AzureDownloadCountProcessedItemRepository downloadCountRepo;
-    @Autowired ExtensionDTORepository extensionDTORepo;
-    @Autowired ExtensionVersionDTORepository extensionVersionDTORepo;
-    @Autowired FileResourceDTORepository fileResourceDTORepo;
-    @Autowired NamespaceMembershipDTORepository namespaceMembershipDTORepo;
+    @Autowired ExtensionJooqRepository extensionJooqRepo;
+    @Autowired ExtensionVersionJooqRepository extensionVersionJooqRepo;
+    @Autowired FileResourceJooqRepository fileResourceJooqRepo;
+    @Autowired NamespaceMembershipJooqRepository namespaceMembershipJooqRepo;
     @Autowired AdminStatisticsRepository adminStatisticsRepo;
     @Autowired AdminStatisticCalculationsRepository adminStatisticCalculationsRepo;
-    @Autowired ExtractResourcesMigrationItemRepository extractResourcesMigrationItemRepo;
+    @Autowired MigrationItemRepository migrationItemRepo;
 
     public Namespace findNamespace(String name) {
         return namespaceRepo.findByNameIgnoreCase(name);
@@ -73,6 +72,10 @@ public class RepositoryService {
 
     public Streamable<Extension> findActiveExtensions(Namespace namespace) {
         return extensionRepo.findByNamespaceAndActiveTrueOrderByNameAsc(namespace);
+    }
+
+    public Streamable<Extension> findExtensions(Collection<Long> extensionIds) {
+        return extensionRepo.findByIdIn(extensionIds);
     }
 
     public Streamable<Extension> findExtensions(Namespace namespace) {
@@ -135,12 +138,8 @@ public class RepositoryService {
         return extension.getNamespace().getName() + "." + extension.getName();
     }
 
-    public Streamable<ExtensionVersion> findVersionsByUser(UserData user) {
-        return extensionVersionRepo.findByPublishedWithUser(user);
-    }
-
-    public Streamable<ExtensionVersion> findVersionsByAccessToken(PersonalAccessToken publishedWith) {
-        return extensionVersionRepo.findByPublishedWith(publishedWith);
+    public Streamable<Extension> findExtensions(UserData user) {
+        return extensionRepo.findDistinctByVersionsPublishedWithUser(user);
     }
 
     public Streamable<ExtensionVersion> findVersionsByAccessToken(PersonalAccessToken publishedWith, boolean active) {
@@ -160,7 +159,7 @@ public class RepositoryService {
     }
 
     public FileResource findFileByName(ExtensionVersion extVersion, String name) {
-        return fileResourceRepo.findByExtensionAndNameIgnoreCase(extVersion, name);
+        return fileResourceRepo.findFirstByExtensionAndNameIgnoreCaseOrderByType(extVersion, name);
     }
 
     public FileResource findFileByTypeAndName(ExtensionVersion extVersion, String type, String name) {
@@ -243,6 +242,10 @@ public class RepositoryService {
         return tokenRepo.findByUser(user);
     }
 
+    public long countActiveAccessTokens(UserData user) {
+        return tokenRepo.countByUserAndActiveTrue(user);
+    }
+
     public PersonalAccessToken findAccessToken(String value) {
         return tokenRepo.findByValue(value);
     }
@@ -262,60 +265,61 @@ public class RepositoryService {
     public List<String> findAllSucceededAzureDownloadCountProcessedItemsByNameIn(List<String> names) {
         return downloadCountRepo.findAllSucceededAzureDownloadCountProcessedItemsByNameIn(names);
     }
-    public List<ExtensionDTO> findAllActiveExtensionDTOsByPublicId(Collection<String> publicIds, String... namespacesToExclude) {
-        return extensionDTORepo.findAllActiveByPublicId(publicIds, namespacesToExclude);
+
+    public List<Extension> findActiveExtensionsByPublicId(Collection<String> publicIds, String... namespacesToExclude) {
+        return extensionJooqRepo.findAllActiveByPublicId(publicIds, namespacesToExclude);
     }
 
-    public ExtensionDTO findActiveExtensionDTO(String name, String namespaceName) {
-        return extensionDTORepo.findActiveByNameIgnoreCaseAndNamespaceNameIgnoreCase(name, namespaceName);
+    public Extension findActiveExtension(String name, String namespaceName) {
+        return extensionJooqRepo.findActiveByNameIgnoreCaseAndNamespaceNameIgnoreCase(name, namespaceName);
     }
 
-    public List<ExtensionDTO> findAllActiveExtensionDTOsById(Collection<Long> ids) {
-        return extensionDTORepo.findAllActiveById(ids);
+    public List<Extension> findActiveExtensionsById(Collection<Long> ids) {
+        return extensionJooqRepo.findAllActiveById(ids);
     }
 
-    public List<ExtensionVersionDTO> findAllActiveExtensionVersionDTOs(Collection<Long> extensionIds, String targetPlatform) {
-        return extensionVersionDTORepo.findAllActiveByExtensionIdAndTargetPlatform(extensionIds, targetPlatform);
+    public List<ExtensionVersion> findActiveExtensionVersions(Collection<Long> extensionIds, String targetPlatform) {
+        return extensionVersionJooqRepo.findAllActiveByExtensionIdAndTargetPlatform(extensionIds, targetPlatform);
     }
 
-    public List<ExtensionVersionDTO> findActiveExtensionVersionDTOsByExtensionPublicId(String targetPlatform, String extensionPublicId) {
-        return extensionVersionDTORepo.findAllActiveByExtensionPublicId(targetPlatform, extensionPublicId);
+    public List<ExtensionVersion> findActiveExtensionVersionsByExtensionPublicId(String targetPlatform, String extensionPublicId) {
+        return extensionVersionJooqRepo.findAllActiveByExtensionPublicId(targetPlatform, extensionPublicId);
     }
 
-    public List<ExtensionVersionDTO> findActiveExtensionVersionDTOsByNamespacePublicId(String targetPlatform, String namespacePublicId) {
-        return extensionVersionDTORepo.findAllActiveByNamespacePublicId(targetPlatform, namespacePublicId);
+    public List<ExtensionVersion> findActiveExtensionVersionsByNamespacePublicId(String targetPlatform, String namespacePublicId) {
+        return extensionVersionJooqRepo.findAllActiveByNamespacePublicId(targetPlatform, namespacePublicId);
     }
 
-    public List<ExtensionVersionDTO> findActiveExtensionVersionDTOsByExtensionName(String targetPlatform, String extensionName, String namespaceName) {
-        return extensionVersionDTORepo.findAllActiveByExtensionNameAndNamespaceName(targetPlatform, extensionName, namespaceName);
+    public List<ExtensionVersion> findActiveExtensionVersionsByVersion(String version, String extensionName, String namespaceName) {
+        return extensionVersionJooqRepo.findAllActiveByVersionAndExtensionNameAndNamespaceName(version, extensionName, namespaceName);
     }
 
-    public List<ExtensionVersionDTO> findActiveExtensionVersionDTOsByVersion(String version, String extensionName, String namespaceName) {
-        return extensionVersionDTORepo.findAllActiveExtensionsByVersionAndExtensionNameAndNamespaceName(version, extensionName, namespaceName);
+    public List<ExtensionVersion> findActiveExtensionVersionsByExtensionName(String targetPlatform, String extensionName, String namespaceName) {
+        return extensionVersionJooqRepo.findAllActiveByExtensionNameAndNamespaceName(targetPlatform, extensionName, namespaceName);
     }
 
-    public List<ExtensionVersionDTO> findActiveExtensionVersionDTOsByNamespaceName(String targetPlatform, String namespaceName) {
-        return extensionVersionDTORepo.findAllActiveByNamespaceName(targetPlatform, namespaceName);
+    public List<ExtensionVersion> findActiveExtensionVersionsByNamespaceName(String targetPlatform, String namespaceName) {
+        return extensionVersionJooqRepo.findAllActiveByNamespaceName(targetPlatform, namespaceName);
     }
 
-    public List<ExtensionVersionDTO> findActiveExtensionVersionDTOsByExtensionName(String targetPlatform, String extensionName) {
-        return extensionVersionDTORepo.findAllActiveByExtensionName(targetPlatform, extensionName);
+    public List<ExtensionVersion> findActiveExtensionVersionsByExtensionName(String targetPlatform, String extensionName) {
+        return extensionVersionJooqRepo.findAllActiveByExtensionName(targetPlatform, extensionName);
     }
 
-    public List<FileResourceDTO> findAllFileResourceDTOsByExtensionVersionIdAndType(Collection<Long> extensionVersionIds, Collection<String> types) {
-        return fileResourceDTORepo.findAll(extensionVersionIds, types);
+    public List<FileResource> findFileResourcesByExtensionVersionIdAndType(Collection<Long> extensionVersionIds, Collection<String> types) {
+        return fileResourceJooqRepo.findAll(extensionVersionIds, types);
     }
 
-    public List<FileResourceDTO> findAllResourceFileResourceDTOs(long extVersionId, String prefix) {
-        return fileResourceDTORepo.findAllResources(extVersionId, prefix);
+    public List<FileResource> findResourceFileResources(long extVersionId, String prefix) {
+        return fileResourceJooqRepo.findAllResources(extVersionId, prefix);
     }
 
-    public Map<Long, Integer> findAllActiveReviewCountsByExtensionId(Collection<Long> extensionIds) {
-        return extensionDTORepo.findAllActiveReviewCountsById(extensionIds);
+    public Map<Long, Integer> findActiveReviewCountsByExtensionId(Collection<Long> extensionIds) {
+        return extensionJooqRepo.findAllActiveReviewCountsById(extensionIds);
     }
 
-    public List<NamespaceMembershipDTO> findAllNamespaceMembershipDTOs(Collection<Long> namespaceIds) {
-        return namespaceMembershipDTORepo.findAllByNamespaceId(namespaceIds);
+    public List<NamespaceMembership> findNamespaceMemberships(Collection<Long> namespaceIds) {
+        return namespaceMembershipJooqRepo.findAllByNamespaceId(namespaceIds);
     }
 
     public AdminStatistics findAdminStatisticsByYearAndMonth(int year, int month) {
@@ -354,6 +358,22 @@ public class RepositoryService {
         return adminStatisticCalculationsRepo.downloadsSumByTimestampGreaterThanEqualAndTimestampLessThan(startInclusive, endExclusive);
     }
 
+    public Map<String, Integer> topMostActivePublishingUsers(LocalDateTime endExclusive, int limit) {
+        return adminStatisticCalculationsRepo.topMostActivePublishingUsers(endExclusive, limit);
+    }
+
+    public Map<String, Integer> topNamespaceExtensions(LocalDateTime endExclusive, int limit) {
+        return adminStatisticCalculationsRepo.topNamespaceExtensions(endExclusive, limit);
+    }
+
+    public Map<String, Integer> topNamespaceExtensionVersions(LocalDateTime endExclusive, int limit) {
+        return adminStatisticCalculationsRepo.topNamespaceExtensionVersions(endExclusive, limit);
+    }
+
+    public Map<String, Long> topMostDownloadedExtensions(LocalDateTime endExclusive, int limit) {
+        return adminStatisticCalculationsRepo.topMostDownloadedExtensions(endExclusive, limit);
+    }
+
     public Streamable<ExtensionVersion> findTargetPlatformVersions(String version, String extensionName, String namespaceName) {
         return extensionVersionRepo.findByVersionAndExtensionNameIgnoreCaseAndExtensionNamespaceNameIgnoreCase(version, extensionName, namespaceName);
     }
@@ -362,15 +382,27 @@ public class RepositoryService {
         return extensionVersionRepo.findByPublishedWithUser(user);
     }
 
-    public Streamable<ExtractResourcesMigrationItem> findNotMigratedResources() {
-        return extractResourcesMigrationItemRepo.findByMigrationScheduledFalseOrderByExtensionExtensionDownloadCountDesc();
-    }
-
     public void deleteFileResources(ExtensionVersion extVersion, String type) {
         fileResourceRepo.deleteByExtensionAndType(extVersion, type);
     }
 
     public int countVersions(Extension extension) {
         return extensionVersionRepo.countByExtension(extension);
+    }
+
+    public Streamable<MigrationItem> findNotMigratedResources() {
+        return findNotMigratedItems("V1_23__FileResource_Extract_Resources.sql");
+    }
+
+    public Streamable<MigrationItem> findNotMigratedPreReleases() {
+        return findNotMigratedItems("V1_26__Extension_Set_PreRelease.sql");
+    }
+
+    public Streamable<MigrationItem> findNotMigratedRenamedDownloads() {
+        return findNotMigratedItems("V1_28__MigrationItem.sql");
+    }
+
+    private Streamable<MigrationItem> findNotMigratedItems(String migrationScript) {
+        return migrationItemRepo.findByMigrationScriptAndMigrationScheduledFalseOrderById(migrationScript);
     }
 }

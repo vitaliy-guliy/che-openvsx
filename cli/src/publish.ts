@@ -7,9 +7,9 @@
  *
  * SPDX-License-Identifier: EPL-2.0
  ********************************************************************************/
-import { createVSIX, ICreateVSIXOptions } from 'vsce';
+import { createVSIX, IPackageOptions } from '@vscode/vsce';
 import { createTempFile, addEnvOptions } from './util';
-import { Registry, RegistryOptions } from './registry';
+import { Extension, Registry, RegistryOptions } from './registry';
 import { checkLicense } from './check-license';
 
 /**
@@ -17,7 +17,7 @@ import { checkLicense } from './check-license';
  */
 export async function publish(options: PublishOptions = {}): Promise<PromiseSettledResult<void>[]> {
         addEnvOptions(options);
-        const internalPublishOptions = [];
+        const internalPublishOptions: InternalPublishOptions[] = [];
         const packagePaths = options.packagePath || [undefined];
         const targets = options.targets || [undefined];
         for (const packagePath of packagePaths) {
@@ -48,7 +48,17 @@ async function doPublish(options: InternalPublishOptions = {}): Promise<void> {
         console.warn("Ignoring option '--pre-release' for prepackaged extension.");
     }
 
-    const extension = await registry.publish(options.extensionFile!, options.pat);
+    let extension: Extension | undefined;
+    try {
+        extension = await registry.publish(options.extensionFile!, options.pat);
+    } catch (err) {
+        if (options.skipDuplicate && err.message.endsWith('is already published.')) {
+            console.log(err.message + ' Skipping publish.');
+            return;
+        } else {
+            throw err;
+        }
+    }
     if (extension.error) {
         throw new Error(extension.error);
     }
@@ -70,7 +80,6 @@ interface PublishCommonOptions extends RegistryOptions {
      * Path to the vsix file to be published. Cannot be used together with `packagePath`.
      */
     extensionFile?: string;
-
     /**
      * The base URL for links detected in Markdown files. Only valid with `packagePath`.
      */
@@ -87,6 +96,10 @@ interface PublishCommonOptions extends RegistryOptions {
      * Mark this package as a pre-release. Only valid with `packagePath`.
      */
     preRelease?: boolean;
+    /**
+     * Whether to fail silently if version already exists on the marketplace
+     */
+    skipDuplicate?: boolean;
 }
 
 // Interface used by top level CLI
@@ -102,6 +115,11 @@ export interface PublishOptions extends PublishCommonOptions {
      * with `extensionFile`.
      */
     packagePath?: string[];
+
+    /**
+     * Whether to do dependency detection via npm or yarn
+     */
+    dependencies?: boolean;
 }
 
 // Interface used internally by the doPublish method
@@ -119,6 +137,11 @@ interface InternalPublishOptions extends PublishCommonOptions {
      * with `extensionFile`.
      */
     packagePath?: string;
+
+    /**
+     * Whether to do dependency detection via npm or yarn
+     */
+     dependencies?: boolean;
 }
 
 async function packageExtension(options: InternalPublishOptions, registry: Registry): Promise<void> {
@@ -127,14 +150,15 @@ async function packageExtension(options: InternalPublishOptions, registry: Regis
     }
 
     options.extensionFile = await createTempFile({ postfix: '.vsix' });
-    const createVSIXOptions: ICreateVSIXOptions = {
+    const packageOptions: IPackageOptions = {
+        packagePath: options.extensionFile,
         target: options.target,
         cwd: options.packagePath,
-        packagePath: options.extensionFile,
         baseContentUrl: options.baseContentUrl,
         baseImagesUrl: options.baseImagesUrl,
         useYarn: options.yarn,
+        dependencies: options.dependencies,
         preRelease: options.preRelease
     };
-    await createVSIX(createVSIXOptions);
+    await createVSIX(packageOptions);
 }

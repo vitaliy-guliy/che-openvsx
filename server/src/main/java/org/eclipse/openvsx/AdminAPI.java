@@ -17,6 +17,7 @@ import java.net.URI;
 
 import com.google.common.base.Strings;
 
+import org.eclipse.openvsx.entities.AdminStatistics;
 import org.eclipse.openvsx.entities.ExtensionVersion;
 import org.eclipse.openvsx.entities.PersistedLog;
 import org.eclipse.openvsx.json.*;
@@ -59,23 +60,45 @@ public class AdminAPI {
 
     @GetMapping(
             path = "/admin/report",
-            produces = "text/csv"
+            produces = MediaType.APPLICATION_JSON_VALUE
     )
-    public ResponseEntity<String> getReport(
+    public ResponseEntity<AdminStatisticsJson> getReportJson(
             @RequestParam("token") String tokenValue,
             @RequestParam("year") int year,
             @RequestParam("month") int month
     ) {
         try {
-            var accessToken = repositories.findAccessToken(tokenValue);
-            if(accessToken == null || !accessToken.isActive() || accessToken.getUser() == null || !ROLE_ADMIN.equals(accessToken.getUser().getRole())) {
-                return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
-            }
+            var statistics = getReport(tokenValue, year, month);
+            return ResponseEntity.ok(statistics.toJson());
+        } catch (ErrorResultException exc) {
+            return exc.toResponseEntity(AdminStatisticsJson.class);
+        }
+    }
 
-            return ResponseEntity.ok(admins.getAdminStatisticsCsv(year, month));
+    @GetMapping(
+            path = "/admin/report",
+            produces = "text/csv"
+    )
+    public ResponseEntity<String> getReportCsv(
+            @RequestParam("token") String tokenValue,
+            @RequestParam("year") int year,
+            @RequestParam("month") int month
+    ) {
+        try {
+            var statistics = getReport(tokenValue, year, month);
+            return ResponseEntity.ok(statistics.toCsv());
         } catch (ErrorResultException exc) {
             return ResponseEntity.status(exc.getStatus()).body(exc.getMessage());
         }
+    }
+
+    private AdminStatistics getReport(String tokenValue, int year, int month) {
+        var accessToken = repositories.findAccessToken(tokenValue);
+        if(accessToken == null || !accessToken.isActive() || accessToken.getUser() == null || !ROLE_ADMIN.equals(accessToken.getUser().getRole())) {
+            throw new ErrorResultException("Invalid access token", HttpStatus.FORBIDDEN);
+        }
+
+        return admins.getAdminStatistics(year, month);
     }
 
     @GetMapping(
@@ -152,7 +175,6 @@ public class AdminAPI {
         path = "/admin/extension/{namespaceName}/{extensionName}",
         produces = MediaType.APPLICATION_JSON_VALUE
     )
-    @Transactional
     public ResponseEntity<ExtensionJson> getExtension(@PathVariable String namespaceName,
                                                       @PathVariable String extensionName) {
         try {
@@ -173,8 +195,8 @@ public class AdminAPI {
                 json.allVersions = Collections.emptyMap();
                 json.allTargetPlatformVersions = Collections.emptyMap();
             } else {
-                json = local.toExtensionVersionJson(latest, null, false);
-                json.allTargetPlatformVersions = extension.getVersions().stream()
+                json = local.toExtensionVersionJson(latest, null, false, false);
+                json.allTargetPlatformVersions = versions.getVersionsTrxn(extension).stream()
                         .collect(Collectors.groupingBy(ExtensionVersion::getVersion, Collectors.mapping(ExtensionVersion::getTargetPlatform, Collectors.toList())));
             }
             json.active = extension.isActive();

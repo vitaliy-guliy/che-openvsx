@@ -12,8 +12,10 @@ package org.eclipse.openvsx.search;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.stream.Collectors;
 
 import com.google.common.base.Strings;
 
@@ -24,7 +26,7 @@ import org.eclipse.openvsx.util.ErrorResultException;
 import org.eclipse.openvsx.util.TargetPlatform;
 import org.elasticsearch.common.unit.Fuzziness;
 import org.elasticsearch.index.query.QueryBuilders;
-import org.elasticsearch.search.aggregations.Aggregations;
+import org.elasticsearch.search.sort.SortBuilder;
 import org.elasticsearch.search.sort.SortBuilders;
 import org.elasticsearch.search.sort.SortOrder;
 import org.slf4j.Logger;
@@ -33,11 +35,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationStartedEvent;
 import org.springframework.context.event.EventListener;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.elasticsearch.core.*;
 import org.springframework.data.elasticsearch.core.query.IndexQueryBuilder;
 import org.springframework.data.elasticsearch.core.query.NativeSearchQueryBuilder;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -71,6 +75,8 @@ public class ElasticSearchService implements ISearchService {
     double timestampRelevance;
     @Value("${ovsx.elasticsearch.relevance.unverified:0.5}")
     double unverifiedRelevance;
+
+    private Long maxResultWindow;
     
     public boolean isEnabled() {
         return enableSearch;
@@ -84,6 +90,7 @@ public class ElasticSearchService implements ISearchService {
      */
     @EventListener
     @Transactional(readOnly = true)
+    @Retryable(DataAccessResourceFailureException.class)
     public void initSearchIndex(ApplicationStartedEvent event) {
         if (!isEnabled() || !clearOnStart && searchOperations.indexOps(ExtensionSearch.class).exists()) {
             return;
@@ -102,6 +109,7 @@ public class ElasticSearchService implements ISearchService {
      */
     @Scheduled(cron = "0 0 4 * * *", zone = "UTC")
     @Transactional(readOnly = true)
+    @Retryable(DataAccessResourceFailureException.class)
     public void updateSearchIndex() {
         if (!isEnabled() || Math.abs(timestampRelevance) < 0.01) {
             return;
@@ -123,6 +131,7 @@ public class ElasticSearchService implements ISearchService {
      * relevant metadata.
      */
     @Transactional
+    @Retryable(DataAccessResourceFailureException.class)
     public void updateSearchIndex(boolean clear) {
         var locked = false;
         try {
@@ -167,6 +176,27 @@ public class ElasticSearchService implements ISearchService {
         }
     }
 
+    @Retryable(DataAccessResourceFailureException.class)
+    public void updateSearchEntries(List<Extension> extensions) {
+        if (!isEnabled() || extensions.isEmpty()) {
+            return;
+        }
+        try {
+            rwLock.writeLock().lock();
+            var indexOps = searchOperations.indexOps(ExtensionSearch.class);
+            var stats = new SearchStats(repositories);
+            var indexQueries = extensions.stream().map(extension ->
+                    new IndexQueryBuilder()
+                            .withObject(relevanceService.toSearchEntry(extension, stats))
+                            .build()
+            ).collect(Collectors.toList());
+            searchOperations.bulkIndex(indexQueries, indexOps.getIndexCoordinates());
+        } finally {
+            rwLock.writeLock().unlock();
+        }
+    }
+
+    @Retryable(DataAccessResourceFailureException.class)
     public void updateSearchEntry(Extension extension) {
         if (!isEnabled()) {
             return;
@@ -184,6 +214,7 @@ public class ElasticSearchService implements ISearchService {
         }
     }
 
+    @Retryable(DataAccessResourceFailureException.class)
     public void removeSearchEntry(Extension extension) {
         if (!isEnabled()) {
             return;
@@ -198,11 +229,8 @@ public class ElasticSearchService implements ISearchService {
     }
 
     public SearchHits<ExtensionSearch> search(Options options) {
-        var indexOps = searchOperations.indexOps(ExtensionSearch.class);
-        var settings = indexOps.getSettings(true);
-        var maxResultWindow = Long.parseLong(settings.get("index.max_result_window").toString());
         var resultWindow = options.requestedOffset + options.requestedSize;
-        if(resultWindow > maxResultWindow) {
+        if(resultWindow > getMaxResultWindow()) {
             return new SearchHitsImpl<>(0, TotalHitsRelation.OFF, 0f, "", Collections.emptyList(), null, null);
         }
 
@@ -264,7 +292,7 @@ public class ElasticSearchService implements ISearchService {
             queryBuilder.withPageable(page);
             try {
                 rwLock.readLock().lock();
-                var searchHits = searchOperations.search(queryBuilder.build(), ExtensionSearch.class, indexOps.getIndexCoordinates());
+                var searchHits = searchOperations.search(queryBuilder.build(), ExtensionSearch.class, searchOperations.indexOps(ExtensionSearch.class).getIndexCoordinates());
                 searchHitsList.add(searchHits);
             } finally {
                 rwLock.readLock().unlock();
@@ -299,22 +327,34 @@ public class ElasticSearchService implements ISearchService {
             throw new ErrorResultException("sortOrder parameter must be either 'asc' or 'desc'.");
         }
 
+        var types = Map.of(
+                "relevance", "float",
+                "averageRating", "float",
+                "timestamp", "long",
+                "downloadCount", "integer"
+        );
+
+        var type = types.get(sortBy);
+        if(type == null) {
+            throw new ErrorResultException("sortBy parameter must be 'relevance', 'timestamp', 'averageRating' or 'downloadCount'.");
+        }
         if ("relevance".equals(sortBy)) {
-            queryBuilder.withSort(SortBuilders.scoreSort());
+            queryBuilder.withSorts(SortBuilders.scoreSort(), fieldSort(sortBy, type, sortOrder));
+        } else {
+            queryBuilder.withSorts(fieldSort(sortBy, type, sortOrder));
+        }
+    }
+
+    private SortBuilder fieldSort(String sortBy, String type, String sortOrder) {
+        return SortBuilders.fieldSort(sortBy).unmappedType(type).order(SortOrder.fromString(sortOrder));
+    }
+
+    private long getMaxResultWindow() {
+        if(maxResultWindow == null) {
+            var settings = searchOperations.indexOps(ExtensionSearch.class).getSettings(true);
+            maxResultWindow = Long.parseLong(settings.get("index.max_result_window").toString());
         }
 
-        if ("relevance".equals(sortBy) || "averageRating".equals(sortBy)) {
-            queryBuilder.withSort(
-                    SortBuilders.fieldSort(sortBy).unmappedType("float").order(SortOrder.fromString(sortOrder)));
-        } else if ("timestamp".equals(sortBy)) {
-            queryBuilder.withSort(
-                    SortBuilders.fieldSort(sortBy).unmappedType("long").order(SortOrder.fromString(sortOrder)));
-        } else if ("downloadCount".equals(sortBy)) {
-            queryBuilder.withSort(
-                    SortBuilders.fieldSort(sortBy).unmappedType("integer").order(SortOrder.fromString(sortOrder)));
-        } else {
-            throw new ErrorResultException(
-                    "sortBy parameter must be 'relevance', 'timestamp', 'averageRating' or 'downloadCount'");
-        }
+        return maxResultWindow;
     }
 }

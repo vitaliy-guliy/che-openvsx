@@ -16,13 +16,11 @@ import static org.mockito.ArgumentMatchers.eq;
 
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.util.List;
 
 import javax.persistence.EntityManager;
 
 import com.google.common.io.CharStreams;
 
-import net.javacrumbs.shedlock.core.LockProvider;
 import org.eclipse.openvsx.ExtensionService;
 import org.eclipse.openvsx.ExtensionValidator;
 import org.eclipse.openvsx.MockTransactionTemplate;
@@ -30,20 +28,18 @@ import org.eclipse.openvsx.UserService;
 import org.eclipse.openvsx.adapter.VSCodeIdService;
 import org.eclipse.openvsx.cache.CacheService;
 import org.eclipse.openvsx.cache.LatestExtensionVersionCacheKeyGenerator;
-import org.eclipse.openvsx.cache.LatestExtensionVersionDTOCacheKeyGenerator;
 import org.eclipse.openvsx.entities.*;
+import org.eclipse.openvsx.publish.PublishExtensionVersionHandler;
 import org.eclipse.openvsx.repositories.RepositoryService;
 import org.eclipse.openvsx.search.SearchUtilService;
 import org.eclipse.openvsx.security.TokenService;
 import org.eclipse.openvsx.storage.AzureBlobStorageService;
 import org.eclipse.openvsx.storage.AzureDownloadCountService;
-import org.eclipse.openvsx.storage.DownloadCountService;
 import org.eclipse.openvsx.storage.GoogleCloudStorageService;
 import org.eclipse.openvsx.storage.StorageUtilService;
 import org.eclipse.openvsx.util.ErrorResultException;
 import org.eclipse.openvsx.util.TargetPlatform;
 import org.eclipse.openvsx.util.VersionService;
-import org.jobrunr.scheduling.JobRequestScheduler;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -64,8 +60,8 @@ import org.springframework.web.client.RestTemplate;
 @ExtendWith(SpringExtension.class)
 @MockBean({
     EntityManager.class, SearchUtilService.class, GoogleCloudStorageService.class, AzureBlobStorageService.class,
-    VSCodeIdService.class, DownloadCountService.class, AzureDownloadCountService.class, LockProvider.class,
-    CacheService.class, UserService.class, JobRequestScheduler.class
+    VSCodeIdService.class, AzureDownloadCountService.class, CacheService.class,
+    UserService.class, PublishExtensionVersionHandler.class
 })
 public class EclipseServiceTest {
 
@@ -323,11 +319,6 @@ public class EclipseServiceTest {
         @Bean
         LatestExtensionVersionCacheKeyGenerator latestExtensionVersionCacheKeyGenerator() {
             return new LatestExtensionVersionCacheKeyGenerator();
-        }
-
-        @Bean
-        LatestExtensionVersionDTOCacheKeyGenerator latestExtensionVersionDTOCacheKeyGenerator() {
-            return new LatestExtensionVersionDTOCacheKeyGenerator();
         }
     }
     

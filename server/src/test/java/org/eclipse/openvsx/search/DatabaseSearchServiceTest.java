@@ -16,15 +16,14 @@ import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
 
-import org.eclipse.openvsx.ExtensionService;
 import org.eclipse.openvsx.cache.LatestExtensionVersionCacheKeyGenerator;
-import org.eclipse.openvsx.cache.LatestExtensionVersionDTOCacheKeyGenerator;
 import org.eclipse.openvsx.entities.*;
 import org.eclipse.openvsx.repositories.RepositoryService;
 import org.eclipse.openvsx.util.TargetPlatform;
 import org.eclipse.openvsx.util.VersionService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -34,8 +33,13 @@ import org.springframework.data.elasticsearch.core.SearchHit;
 import org.springframework.data.util.Streamable;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
 
+import javax.persistence.EntityManager;
+
 @ExtendWith(SpringExtension.class)
 public class DatabaseSearchServiceTest {
+
+    @MockBean
+    EntityManager entityManager;
 
     @MockBean
     RepositoryService repositories;
@@ -311,6 +315,7 @@ public class DatabaseSearchServiceTest {
         extension.setAverageRating(averageRating);
         extension.setDownloadCount(downloadCount);
         extension.setActive(true);
+        Mockito.when(entityManager.merge(extension)).thenReturn(extension);
         Mockito.when(repositories.countActiveReviews(extension)).thenReturn((long) ratingCount);
         var namespace = new Namespace();
         namespace.setName(namespaceName);
@@ -354,11 +359,6 @@ public class DatabaseSearchServiceTest {
         @Bean
         LatestExtensionVersionCacheKeyGenerator latestExtensionVersionCacheKeyGenerator() {
             return new LatestExtensionVersionCacheKeyGenerator();
-        }
-
-        @Bean
-        LatestExtensionVersionDTOCacheKeyGenerator latestExtensionVersionDTOCacheKeyGenerator() {
-            return new LatestExtensionVersionDTOCacheKeyGenerator();
         }
     }
 }

@@ -102,7 +102,15 @@ class PublishExtensionDialogComponent extends React.Component<PublishExtensionDi
     };
 
     protected handleCancel = () => {
-        this.setState({ open: false });
+        if (this.state.publishing) {
+            this.abortController.abort();
+        }
+        this.setState({
+            open: false,
+            publishing: false,
+            fileToPublish: undefined,
+            oldFileToPublish: undefined
+        });
     };
 
     protected handleUndo = () => {
@@ -133,9 +141,11 @@ class PublishExtensionDialogComponent extends React.Component<PublishExtensionDi
         try {
             published = await this.tryPublishExtension(this.state.fileToPublish);
         } catch (err) {
-            retryPublish = await this.tryResolveNamespaceError(err);
-            if (!retryPublish) {
-                this.context.handleError(err);
+            try {
+                await this.tryResolveNamespaceError(err);
+                retryPublish = true;
+            } catch (namespaceError) {
+                this.context.handleError(namespaceError);
             }
         }
         if (retryPublish) {
@@ -147,7 +157,11 @@ class PublishExtensionDialogComponent extends React.Component<PublishExtensionDi
         }
         if (published) {
             this.props.extensionPublished();
-            this.setState({ open: false });
+            this.setState({
+                open: false,
+                fileToPublish: undefined,
+                oldFileToPublish: undefined
+            });
         }
 
         this.setState({ publishing: false });
@@ -171,23 +185,21 @@ class PublishExtensionDialogComponent extends React.Component<PublishExtensionDi
     };
 
     protected tryResolveNamespaceError = async (publishResponse: Readonly<ErrorResult>) => {
-        let resolved = false;
-        try {
-            const namespaceError = 'Unknown publisher: ';
-            if (publishResponse.error.startsWith(namespaceError)) {
-                const namespace = publishResponse.error.substring(namespaceError.length, publishResponse.error.indexOf('\n', namespaceError.length));
-                const namespaceResponse = await this.context.service.createNamespace(this.abortController, namespace);
-                if (isError(namespaceResponse)) {
-                    throw namespaceError;
-                }
-
-                resolved = true;
-            }
-        } catch (err) {
-            this.context.handleError(err);
+        const namespaceError = 'Unknown publisher: ';
+        if (!publishResponse.error.startsWith(namespaceError)) {
+            throw publishResponse;
         }
-
-        return resolved;
+        const namespace = publishResponse.error.substring(namespaceError.length, publishResponse.error.indexOf('\n', namespaceError.length));
+        if (!namespace || namespace === 'undefined') {
+            const result: Readonly<ErrorResult> = {
+                error: `Invalid namespace: ${namespace}`
+            };
+            throw result;
+        }
+        const namespaceResponse = await this.context.service.createNamespace(this.abortController, namespace);
+        if (isError(namespaceResponse)) {
+            throw namespaceResponse;
+        }
     };
 
     componentDidMount() {
@@ -195,6 +207,7 @@ class PublishExtensionDialogComponent extends React.Component<PublishExtensionDi
     }
 
     componentWillUnmount() {
+        this.abortController.abort();
         document.removeEventListener('keydown', this.handleEnter);
     }
 

@@ -34,9 +34,7 @@ import org.eclipse.openvsx.util.UrlUtil;
 import org.eclipse.openvsx.util.VersionService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.CacheControl;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
+import org.springframework.http.*;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
@@ -56,7 +54,6 @@ public class SitemapController {
     String webuiUrl;
 
     @GetMapping(path = "/sitemap.xml", produces = MediaType.APPLICATION_XML_VALUE)
-    @Transactional
     public ResponseEntity<StreamingResponseBody> getSitemap() throws ParserConfigurationException {
         var document = DocumentBuilderFactory.newInstance().newDocumentBuilder().newDocument();
         document.setXmlStandalone(true);
@@ -73,7 +70,7 @@ public class SitemapController {
             entry.appendChild(loc);
 
             var lastmod = document.createElement("lastmod");
-            var latest = versions.getLatest(extension, null, false, true);
+            var latest = versions.getLatestTrxn(extension, null, false, true);
             lastmod.setTextContent(latest.getTimestamp().format(timestampFormatter));
             entry.appendChild(lastmod);
             urlset.appendChild(entry);
@@ -92,6 +89,7 @@ public class SitemapController {
         };
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.maxAge(1, TimeUnit.DAYS).cachePublic())
+                .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_XML_VALUE)
                 .body(stream);
     }
 

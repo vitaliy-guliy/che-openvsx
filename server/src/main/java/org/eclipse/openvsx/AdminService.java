@@ -35,6 +35,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
+import static org.eclipse.openvsx.entities.FileResource.*;
+
 @Component
 public class AdminService {
 
@@ -195,44 +197,33 @@ public class AdminService {
         return ResultJson.success("Created namespace " + namespace.getName());
     }
 
-    @Transactional
     public UserPublishInfoJson getUserPublishInfo(String provider, String loginName) {
         var user = repositories.findUserByLoginName(provider, loginName);
         if (user == null) {
             throw new ErrorResultException("User not found: " + loginName, HttpStatus.NOT_FOUND);
         }
 
-        var serverUrl = UrlUtil.getBaseUrl();
-        var versionJsons = new ArrayList<ExtensionJson>();
-        var activeAccessTokenNum = 0;
-        var accessTokens = repositories.findAccessTokens(user);
-        for (var accessToken : accessTokens) {
-            if (accessToken.isActive()) {
-                activeAccessTokenNum++;
-            }
-            var versionList = repositories.findVersionsByAccessToken(accessToken).toList();
-            var fileUrls = storageUtil.getFileUrls(versionList, serverUrl, FileResource.DOWNLOAD, FileResource.MANIFEST,
-                    FileResource.ICON, FileResource.README, FileResource.LICENSE, FileResource.CHANGELOG);
-            for (var version : versionList) {
-                var latest = versions.getLatest(version.getExtension(), null, false, true);
-                var json = version.toExtensionJson();
-                json.preview = latest.isPreview();
-                json.active = version.isActive();
-                json.files = fileUrls.get(version.getId());
-                versionJsons.add(json);
-            }
-        }
-        versionJsons.sort(
-            Comparator.comparing((ExtensionJson j) -> j.namespace)
-                      .thenComparing(j -> j.name)
-                      .thenComparing(j -> j.version)
-        );
-
         var userPublishInfo = new UserPublishInfoJson();
         userPublishInfo.user = user.toUserJson();
         eclipse.enrichUserJson(userPublishInfo.user, user);
-        userPublishInfo.extensions = versionJsons;
-        userPublishInfo.activeAccessTokenNum = activeAccessTokenNum;
+        userPublishInfo.activeAccessTokenNum = (int) repositories.countActiveAccessTokens(user);
+        userPublishInfo.extensions = repositories.findExtensions(user).stream()
+                .map(e -> versions.getLatestTrxn(e, null, false, false))
+                .map(latest -> {
+                    var json = latest.toExtensionJson();
+                    json.preview = latest.isPreview();
+                    json.active = latest.getExtension().isActive();
+                    json.files = storageUtil.getFileUrls(latest, UrlUtil.getBaseUrl(),
+                            DOWNLOAD, MANIFEST, ICON, README, LICENSE, CHANGELOG);
+
+                    return json;
+                })
+                .sorted(Comparator.<ExtensionJson, String>comparing(j -> j.namespace)
+                                .thenComparing(j -> j.name)
+                                .thenComparing(j -> j.version)
+                )
+                .collect(Collectors.toList());
+
         return userPublishInfo;
     }
 
@@ -302,7 +293,7 @@ public class AdminService {
     }
 
     @Transactional
-    public String getAdminStatisticsCsv(int year, int month) throws ErrorResultException {
+    public AdminStatistics getAdminStatistics(int year, int month) throws ErrorResultException {
         if(year < 0) {
             throw new ErrorResultException("Year can't be negative", HttpStatus.BAD_REQUEST);
         }
@@ -338,6 +329,12 @@ public class AdminService {
             var extensionsByRating = repositories.countActiveExtensionsGroupedByExtensionReviewRating(endExclusive);
             var publishersByExtensionsPublished = repositories.countActiveExtensionPublishersGroupedByExtensionsPublished(endExclusive);
 
+            var limit = 10;
+            var topMostActivePublishingUsers = repositories.topMostActivePublishingUsers(endExclusive, limit);
+            var topNamespaceExtensions = repositories.topNamespaceExtensions(endExclusive, limit);
+            var topNamespaceExtensionVersions = repositories.topNamespaceExtensionVersions(endExclusive, limit);
+            var topMostDownloadedExtensions = repositories.topMostDownloadedExtensions(endExclusive, limit);
+
             statistics = new AdminStatistics();
             statistics.setYear(year);
             statistics.setMonth(month);
@@ -349,6 +346,10 @@ public class AdminService {
             statistics.setNamespaceOwners(namespaceOwners);
             statistics.setExtensionsByRating(extensionsByRating);
             statistics.setPublishersByExtensionsPublished(publishersByExtensionsPublished);
+            statistics.setTopMostActivePublishingUsers(topMostActivePublishingUsers);
+            statistics.setTopNamespaceExtensions(topNamespaceExtensions);
+            statistics.setTopNamespaceExtensionVersions(topNamespaceExtensionVersions);
+            statistics.setTopMostDownloadedExtensions(topMostDownloadedExtensions);
 
             if(!currentYearAndMonth) {
                 // archive statistics for quicker lookup next time
@@ -356,6 +357,6 @@ public class AdminService {
             }
         }
 
-        return statistics.toCsv();
+        return statistics;
     }
 }
